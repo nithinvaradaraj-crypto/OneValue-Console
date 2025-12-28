@@ -56,3 +56,6 @@ coverage/
 secrets/
 *.pem
 *.key
+
+# Docker exports (use Docker Hub instead)
+*.tar.gz

@@ -1,0 +1,224 @@
+{
+  "name": "01_historical_data_dump",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "start",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "filters": {
+          "q": "in:inbox after:2024/01/01"
+        },
+        "options": {
+          "maxResults": 500
+        }
+      },
+      "id": "gmail_fetch",
+      "name": "Gmail: Fetch Emails",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2,
+      "position": [460, 200],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "gmail_oauth",
+          "name": "Gmail OAuth2"
+        }
+      },
+      "notes": "Fetch all emails from .edu domains since Jan 1, 2024"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Transform email data for Supabase\nconst emails = $input.all();\nconst transformed = [];\n\nfor (const email of emails) {\n  const data = email.json;\n  \n  // Check if from .edu domain\n  const fromEmail = data.from || '';\n  const isEduDomain = fromEmail.toLowerCase().includes('.edu');\n  \n  if (isEduDomain) {\n    transformed.push({\n      json: {\n        source: 'Gmail',\n        event_type: 'Communication',\n        title: data.subject || 'No Subject',\n        content_raw: {\n          from: data.from,\n          to: data.to,\n          subject: data.subject,\n          snippet: data.snippet,\n          date: data.date,\n          thread_id: data.threadId,\n          message_id: data.id\n        },\n        evidence_link: `https://mail.google.com/mail/u/0/#inbox/${data.id}`,\n        message_id: data.id,\n        thread_id: data.threadId,\n        ai_processed: false\n      }\n    });\n  }\n}\n\nreturn transformed;"
+      },
+      "id": "transform_emails",
+      "name": "Transform Email Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 200]
+    },
+    {
+      "parameters": {
+        "resource": "space",
+        "operation": "getAll"
+      },
+      "id": "chat_spaces",
+      "name": "Google Chat: List Spaces",
+      "type": "n8n-nodes-base.googleChat",
+      "typeVersion": 1,
+      "position": [460, 400],
+      "credentials": {
+        "googleChatOAuth2Api": {
+          "id": "gchat_oauth",
+          "name": "Google Chat OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "getAll",
+        "spaceId": "={{ $json.name }}",
+        "filters": {
+          "filter": "createTime > \"2024-01-01T00:00:00Z\""
+        },
+        "returnAll": true
+      },
+      "id": "chat_messages",
+      "name": "Google Chat: Get Messages",
+      "type": "n8n-nodes-base.googleChat",
+      "typeVersion": 1,
+      "position": [680, 400],
+      "credentials": {
+        "googleChatOAuth2Api": {
+          "id": "gchat_oauth",
+          "name": "Google Chat OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Transform chat messages for Supabase\nconst messages = $input.all();\nconst transformed = [];\n\nfor (const msg of messages) {\n  const data = msg.json;\n  \n  // Detect if this is a MOM\n  const text = data.text || '';\n  const isMOM = text.toLowerCase().includes('mom:') || \n                text.toLowerCase().includes('minutes of meeting') ||\n                text.toLowerCase().includes('meeting notes');\n  \n  transformed.push({\n    json: {\n      source: 'GoogleChat',\n      event_type: isMOM ? 'MOM' : 'Communication',\n      title: isMOM ? 'Meeting Notes' : 'Chat Message',\n      content_raw: {\n        text: data.text,\n        sender: data.sender?.displayName || 'Unknown',\n        sender_email: data.sender?.email,\n        space: data.space?.displayName,\n        space_id: data.space?.name,\n        create_time: data.createTime,\n        thread_id: data.thread?.name\n      },\n      evidence_link: `https://chat.google.com/room/${data.space?.name?.split('/').pop()}/${data.name?.split('/').pop()}`,\n      message_id: data.name,\n      space_id: data.space?.name,\n      ai_processed: false\n    }\n  });\n}\n\nreturn transformed;"
+      },
+      "id": "transform_chat",
+      "name": "Transform Chat Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 400]
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "table": "delivery_intelligence",
+        "columns": "source, event_type, title, content_raw, evidence_link, message_id, thread_id, space_id, ai_processed"
+      },
+      "id": "supabase_insert",
+      "name": "Supabase: Insert Data",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1120, 300],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase_api",
+          "name": "Supabase API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "system_audit_logs",
+        "columns": "workflow_name, execution_status, records_processed, metadata",
+        "additionalFields": {
+          "workflow_name": "historical_data_dump",
+          "execution_status": "Success",
+          "records_processed": "={{ $input.all().length }}",
+          "metadata": "={{ JSON.stringify({ timestamp: new Date().toISOString() }) }}"
+        }
+      },
+      "id": "audit_log",
+      "name": "Audit: Log Success",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1340, 300],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase_api",
+          "name": "Supabase API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.error }}",
+              "operation": "exists"
+            }
+          ]
+        }
+      },
+      "id": "error_check",
+      "name": "IF: Error Check",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1120, 500]
+    },
+    {
+      "parameters": {
+        "errorMessage": "={{ $json.error }}"
+      },
+      "id": "error_trigger",
+      "name": "Trigger Error Handler",
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [1340, 500]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {"node": "Gmail: Fetch Emails", "type": "main", "index": 0},
+          {"node": "Google Chat: List Spaces", "type": "main", "index": 0}
+        ]
+      ]
+    },
+    "Gmail: Fetch Emails": {
+      "main": [
+        [{"node": "Transform Email Data", "type": "main", "index": 0}]
+      ]
+    },
+    "Transform Email Data": {
+      "main": [
+        [{"node": "Supabase: Insert Data", "type": "main", "index": 0}]
+      ]
+    },
+    "Google Chat: List Spaces": {
+      "main": [
+        [{"node": "Google Chat: Get Messages", "type": "main", "index": 0}]
+      ]
+    },
+    "Google Chat: Get Messages": {
+      "main": [
+        [{"node": "Transform Chat Data", "type": "main", "index": 0}]
+      ]
+    },
+    "Transform Chat Data": {
+      "main": [
+        [{"node": "Supabase: Insert Data", "type": "main", "index": 0}]
+      ]
+    },
+    "Supabase: Insert Data": {
+      "main": [
+        [
+          {"node": "Audit: Log Success", "type": "main", "index": 0},
+          {"node": "IF: Error Check", "type": "main", "index": 0}
+        ]
+      ]
+    },
+    "IF: Error Check": {
+      "main": [
+        [{"node": "Trigger Error Handler", "type": "main", "index": 0}],
+        []
+      ]
+    }
+  },
+  "settings": {
+    "errorWorkflow": "05_onevalue_alert_manager",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": [
+    {"name": "onevalue"},
+    {"name": "historical"},
+    {"name": "data-dump"}
+  ]
+}

@@ -1,0 +1,352 @@
+{
+  "name": "04_ai_project_analyzer",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{"field": "hours", "hoursInterval": 2}]
+        }
+      },
+      "id": "schedule",
+      "name": "Schedule: Every 2 Hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "operation": "select",
+        "table": "delivery_intelligence",
+        "filters": {
+          "ai_processed": false
+        },
+        "options": {
+          "limit": 50
+        }
+      },
+      "id": "get_unprocessed",
+      "name": "Supabase: Get Unprocessed",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [460, 300],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase_api",
+          "name": "Supabase API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "split_batches",
+      "name": "Split: Process Each",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "operation": "select",
+        "table": "sow_contracts",
+        "filters": {
+          "id": "={{ $json.project_id }}"
+        }
+      },
+      "id": "get_sow",
+      "name": "Supabase: Get Related SOW",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [900, 300],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase_api",
+          "name": "Supabase API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Prepare AI analysis prompt\nconst delivery = $('Split: Process Each').item.json;\nconst sowResults = $input.all();\nconst sow = sowResults.length > 0 ? sowResults[0].json : null;\n\nlet prompt = `You are analyzing project communication for the OneValue Delivery Intelligence Console.\n\n`;\n\nif (sow) {\n  prompt += `## Statement of Work (SOW) Context\n**Project:** ${sow.project_name}\n**Client:** ${sow.client_name || 'Not specified'}\n**Timeline:** ${sow.start_date} to ${sow.end_date}\n**Owner:** ${sow.inferred_owner || 'Not specified'}\n\n**Scope Anchors (Deliverables):**\n${(sow.scope_anchors || []).map((s, i) => `${i+1}. ${s}`).join('\\n')}\n\n`;\n}\n\nprompt += `## Communication to Analyze\n**Type:** ${delivery.event_type}\n**Source:** ${delivery.source}\n**Date:** ${delivery.created_at}\n\n**Content:**\n${JSON.stringify(delivery.content_raw, null, 2)}\n\n## Analysis Instructions\nAnalyze this communication and return ONLY valid JSON (no markdown, no explanation):\n\n{\n  \"sentiment_score\": <number between -1.0 (very negative) and 1.0 (very positive)>,\n  \"extracted_blockers\": [\"blocker 1\", \"blocker 2\"],\n  \"extracted_objectives\": [\"objective discussed 1\", \"objective 2\"],\n  \"extracted_owners\": [\"person assigned task 1\", \"person 2\"],\n  \"extracted_action_items\": [\n    {\"action\": \"description\", \"owner\": \"name\", \"priority\": \"High/Medium/Low\"}\n  ],\n  \"scope_creep_detected\": <boolean>,\n  \"scope_creep_reason\": \"explanation if true, null otherwise\",\n  \"health_assessment\": \"Healthy\" | \"At Risk\" | \"Critical\",\n  \"renewal_risk\": <number 0.0 to 1.0>,\n  \"summary\": \"2-3 sentence summary of key points\"\n}\n\nFocus on:\n1. Identifying blockers, risks, and issues\n2. Detecting scope creep (work outside defined scope anchors)\n3. Assessing overall project health\n4. Extracting action items with owners\n5. Sentiment from the communication tone`;\n\nreturn {\n  json: {\n    delivery_id: delivery.id,\n    project_id: delivery.project_id,\n    sow: sow,\n    prompt: prompt\n  }\n};"
+      },
+      "id": "prepare_prompt",
+      "name": "Prepare AI Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {"name": "x-api-key", "value": "={{ $env.ANTHROPIC_API_KEY }}"},
+            {"name": "anthropic-version", "value": "2023-06-01"},
+            {"name": "Content-Type", "value": "application/json"}
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {"name": "model", "value": "claude-sonnet-4-20250514"},
+            {"name": "max_tokens", "value": "1500"},
+            {"name": "messages", "value": "={{ JSON.stringify([{role: 'user', content: $json.prompt}]) }}"}
+          ]
+        }
+      },
+      "id": "claude_analyze",
+      "name": "Claude: Analyze Communication",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1340, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse Claude response and prepare updates\nconst input = $('Prepare AI Prompt').item.json;\nconst response = $input.item.json;\n\ntry {\n  let content = response.content[0].text;\n  content = content.replace(/```json\\n?/g, '').replace(/```\\n?/g, '').trim();\n  \n  const analysis = JSON.parse(content);\n  \n  return {\n    json: {\n      delivery_update: {\n        id: input.delivery_id,\n        sentiment_score: analysis.sentiment_score,\n        extracted_blockers: analysis.extracted_blockers || [],\n        extracted_objectives: analysis.extracted_objectives || [],\n        extracted_owners: analysis.extracted_owners || [],\n        extracted_action_items: analysis.extracted_action_items || [],\n        ai_processed: true,\n        ai_insights: analysis,\n        ai_processed_at: new Date().toISOString()\n      },\n      health_update: input.project_id ? {\n        project_id: input.project_id,\n        overall_health: analysis.health_assessment,\n        blocker_count: (analysis.extracted_blockers || []).length,\n        scope_creep_detected: analysis.scope_creep_detected,\n        scope_creep_details: analysis.scope_creep_reason,\n        renewal_risk_score: analysis.renewal_risk,\n        ai_summary: analysis.summary\n      } : null,\n      action_items: (analysis.extracted_action_items || []).map(item => ({\n        project_id: input.project_id,\n        delivery_intelligence_id: input.delivery_id,\n        title: item.action,\n        owner: item.owner,\n        priority: item.priority || 'Medium',\n        status: 'Open',\n        source_type: 'AI_Extracted'\n      })),\n      is_critical: analysis.health_assessment === 'Critical' || analysis.scope_creep_detected,\n      critical_reason: analysis.health_assessment === 'Critical' ? 'Critical health assessment' : (analysis.scope_creep_detected ? `Scope creep: ${analysis.scope_creep_reason}` : null)\n    }\n  };\n} catch (error) {\n  return {\n    json: {\n      error: error.message,\n      delivery_id: input.delivery_id\n    }\n  };\n}"
+      },
+      "id": "parse_analysis",
+      "name": "Parse Analysis Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1560, 300]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "table": "delivery_intelligence",
+        "filters": {
+          "id": "={{ $json.delivery_update.id }}"
+        },
+        "updateColumns": "sentiment_score, extracted_blockers, extracted_objectives, extracted_owners, extracted_action_items, ai_processed, ai_insights, ai_processed_at"
+      },
+      "id": "update_delivery",
+      "name": "Supabase: Update Delivery",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1780, 200],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase_api",
+          "name": "Supabase API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.health_update !== null }}",
+              "operation": "equal",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "check_health",
+      "name": "IF: Has Project",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1780, 400]
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "table": "project_health_metrics",
+        "columns": "project_id, overall_health, blocker_count, scope_creep_detected, scope_creep_details, renewal_risk_score, ai_summary, metric_date",
+        "conflictColumns": "project_id, metric_date",
+        "additionalFields": {
+          "metric_date": "={{ new Date().toISOString().split('T')[0] }}"
+        }
+      },
+      "id": "upsert_health",
+      "name": "Supabase: Upsert Health",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [2000, 350],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase_api",
+          "name": "Supabase API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{ $json.action_items.length }}",
+              "operation": "larger",
+              "value2": 0
+            }
+          ]
+        }
+      },
+      "id": "check_actions",
+      "name": "IF: Has Actions",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [2000, 500]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "action_queue",
+        "columns": "project_id, delivery_intelligence_id, title, owner, priority, status, source_type"
+      },
+      "id": "insert_actions",
+      "name": "Supabase: Insert Actions",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [2220, 450],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase_api",
+          "name": "Supabase API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.is_critical }}",
+              "operation": "equal",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "check_critical",
+      "name": "IF: Critical Issue",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [2000, 150]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "create",
+        "spaceId": "={{ $env.ONEVALUE_ALERTS_SPACE_ID }}",
+        "messageText": "={{ '⚠️ CRITICAL ALERT\\n\\nProject: ' + ($json.health_update?.project_id || 'Unknown') + '\\n\\nReason: ' + $json.critical_reason + '\\n\\nReview immediately in the Delivery Intelligence Console.' }}"
+      },
+      "id": "notify_critical",
+      "name": "Google Chat: Alert",
+      "type": "n8n-nodes-base.googleChat",
+      "typeVersion": 1,
+      "position": [2220, 100],
+      "credentials": {
+        "googleChatOAuth2Api": {
+          "id": "gchat_oauth",
+          "name": "Google Chat OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "system_audit_logs",
+        "columns": "workflow_name, execution_status, records_processed, metadata",
+        "additionalFields": {
+          "workflow_name": "ai_project_analyzer",
+          "execution_status": "Success",
+          "records_processed": "={{ $('Supabase: Get Unprocessed').all().length }}",
+          "metadata": "={{ JSON.stringify({ timestamp: new Date().toISOString() }) }}"
+        }
+      },
+      "id": "audit_log",
+      "name": "Audit: Log Execution",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [2440, 300],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase_api",
+          "name": "Supabase API"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Schedule: Every 2 Hours": {
+      "main": [
+        [{"node": "Supabase: Get Unprocessed", "type": "main", "index": 0}]
+      ]
+    },
+    "Supabase: Get Unprocessed": {
+      "main": [
+        [{"node": "Split: Process Each", "type": "main", "index": 0}]
+      ]
+    },
+    "Split: Process Each": {
+      "main": [
+        [{"node": "Supabase: Get Related SOW", "type": "main", "index": 0}]
+      ]
+    },
+    "Supabase: Get Related SOW": {
+      "main": [
+        [{"node": "Prepare AI Prompt", "type": "main", "index": 0}]
+      ]
+    },
+    "Prepare AI Prompt": {
+      "main": [
+        [{"node": "Claude: Analyze Communication", "type": "main", "index": 0}]
+      ]
+    },
+    "Claude: Analyze Communication": {
+      "main": [
+        [{"node": "Parse Analysis Results", "type": "main", "index": 0}]
+      ]
+    },
+    "Parse Analysis Results": {
+      "main": [
+        [
+          {"node": "Supabase: Update Delivery", "type": "main", "index": 0},
+          {"node": "IF: Has Project", "type": "main", "index": 0},
+          {"node": "IF: Critical Issue", "type": "main", "index": 0},
+          {"node": "IF: Has Actions", "type": "main", "index": 0}
+        ]
+      ]
+    },
+    "Supabase: Update Delivery": {
+      "main": [
+        [{"node": "Audit: Log Execution", "type": "main", "index": 0}]
+      ]
+    },
+    "IF: Has Project": {
+      "main": [
+        [{"node": "Supabase: Upsert Health", "type": "main", "index": 0}],
+        []
+      ]
+    },
+    "IF: Critical Issue": {
+      "main": [
+        [{"node": "Google Chat: Alert", "type": "main", "index": 0}],
+        []
+      ]
+    },
+    "IF: Has Actions": {
+      "main": [
+        [{"node": "Supabase: Insert Actions", "type": "main", "index": 0}],
+        []
+      ]
+    }
+  },
+  "settings": {
+    "errorWorkflow": "05_onevalue_alert_manager",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": [
+    {"name": "onevalue"},
+    {"name": "ai"},
+    {"name": "analyzer"}
+  ]
+}

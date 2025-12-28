@@ -1,0 +1,144 @@
+{
+  "name": "05_onevalue_alert_manager",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "error_trigger",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "notes": "Catches errors from all workflows with errorWorkflow set to this workflow"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Format error details for logging and alerting\nconst error = $input.item.json;\n\n// Extract error information\nconst workflowName = error.workflow?.name || 'Unknown Workflow';\nconst workflowId = error.workflow?.id || 'unknown';\nconst executionId = error.execution?.id || 'unknown';\nconst errorMessage = error.execution?.error?.message || 'Unknown error';\nconst errorStack = error.execution?.error?.stack || '';\nconst failedNode = error.execution?.lastNodeExecuted || 'Unknown Node';\nconst timestamp = new Date().toISOString();\n\n// Determine severity\nlet severity = 'Medium';\nif (errorMessage.toLowerCase().includes('timeout') || \n    errorMessage.toLowerCase().includes('rate limit')) {\n  severity = 'High';\n}\nif (errorMessage.toLowerCase().includes('authentication') ||\n    errorMessage.toLowerCase().includes('authorization') ||\n    errorMessage.toLowerCase().includes('critical')) {\n  severity = 'Critical';\n}\n\n// Format for Google Chat\nconst chatMessage = `🚨 *Workflow Error Alert*\n\n*Workflow:* ${workflowName}\n*Severity:* ${severity}\n*Failed Node:* ${failedNode}\n*Time:* ${timestamp}\n\n*Error:*\n\\`\\`\\`\n${errorMessage.substring(0, 500)}\n\\`\\`\\`\n\n*Execution ID:* ${executionId}\n*Action Required:* Review and resolve in n8n dashboard`;\n\nreturn {\n  json: {\n    audit_log: {\n      workflow_name: workflowName,\n      workflow_id: workflowId,\n      execution_id: executionId,\n      execution_status: 'Failed',\n      error_message: errorMessage,\n      error_payload: {\n        stack: errorStack,\n        node: failedNode,\n        timestamp: timestamp\n      }\n    },\n    chat_message: chatMessage,\n    severity: severity,\n    should_email: severity === 'Critical'\n  }\n};"
+      },
+      "id": "format_error",
+      "name": "Format Error Details",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "system_audit_logs",
+        "columns": "workflow_name, workflow_id, execution_id, execution_status, error_message, error_payload"
+      },
+      "id": "log_to_db",
+      "name": "Supabase: Log Error",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [680, 300],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase_api",
+          "name": "Supabase API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "create",
+        "spaceId": "={{ $env.ONEVALUE_ALERTS_SPACE_ID }}",
+        "messageText": "={{ $json.chat_message }}"
+      },
+      "id": "chat_alert",
+      "name": "Google Chat: Send Alert",
+      "type": "n8n-nodes-base.googleChat",
+      "typeVersion": 1,
+      "position": [900, 200],
+      "credentials": {
+        "googleChatOAuth2Api": {
+          "id": "gchat_oauth",
+          "name": "Google Chat OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.should_email }}",
+              "operation": "equal",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "check_critical",
+      "name": "IF: Critical Error",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [900, 400]
+    },
+    {
+      "parameters": {
+        "fromEmail": "alerts@oneorigin.us",
+        "toEmail": "nithin@oneorigin.us",
+        "subject": "=🚨 CRITICAL: OneValue Workflow Failure - {{ $('Format Error Details').item.json.audit_log.workflow_name }}",
+        "text": "={{ 'A critical error has occurred in the OneValue Delivery Intelligence Console.\\n\\n' + 'Workflow: ' + $('Format Error Details').item.json.audit_log.workflow_name + '\\n' + 'Error: ' + $('Format Error Details').item.json.audit_log.error_message + '\\n\\n' + 'Please investigate immediately.\\n\\n' + 'Execution ID: ' + $('Format Error Details').item.json.audit_log.execution_id }}"
+      },
+      "id": "send_email",
+      "name": "Email: Critical Alert",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2,
+      "position": [1120, 400],
+      "credentials": {
+        "smtp": {
+          "id": "smtp_creds",
+          "name": "SMTP"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "no_op",
+      "name": "No Operation",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1120, 500]
+    }
+  ],
+  "connections": {
+    "Error Trigger": {
+      "main": [
+        [{"node": "Format Error Details", "type": "main", "index": 0}]
+      ]
+    },
+    "Format Error Details": {
+      "main": [
+        [
+          {"node": "Supabase: Log Error", "type": "main", "index": 0}
+        ]
+      ]
+    },
+    "Supabase: Log Error": {
+      "main": [
+        [
+          {"node": "Google Chat: Send Alert", "type": "main", "index": 0},
+          {"node": "IF: Critical Error", "type": "main", "index": 0}
+        ]
+      ]
+    },
+    "IF: Critical Error": {
+      "main": [
+        [{"node": "Email: Critical Alert", "type": "main", "index": 0}],
+        [{"node": "No Operation", "type": "main", "index": 0}]
+      ]
+    }
+  },
+  "settings": {
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": [
+    {"name": "onevalue"},
+    {"name": "error-handler"},
+    {"name": "alerts"}
+  ]
+}

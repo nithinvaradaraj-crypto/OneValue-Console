@@ -1,0 +1,35 @@
+{
+  "mcpServers": {
+    "n8n": {
+      "command": "n8n-mcp",
+      "args": [],
+      "env": {
+        "N8N_API_URL": "${N8N_URL}",
+        "N8N_API_KEY": "${N8N_API_KEY}"
+      }
+    },
+    "supabase": {
+      "command": "@supabase/mcp-server-supabase",
+      "args": [],
+      "env": {
+        "SUPABASE_URL": "${SUPABASE_URL}",
+        "SUPABASE_SERVICE_ROLE_KEY": "${SUPABASE_SERVICE_ROLE}"
+      }
+    },
+    "lovable": {
+      "command": "npx",
+      "args": ["-y", "@iamseancorcoran/loveable-mcp-server"],
+      "env": {
+        "LOVEABLE_API_KEY": "${LOVABLE_API_KEY}"
+      }
+    },
+    "playwright": {
+      "command": "@executeautomation/playwright-mcp-server",
+      "args": [],
+      "env": {
+        "HEADLESS": "true",
+        "BROWSER": "chromium"
+      }
+    },
+  }
+}

@@ -1,0 +1,262 @@
+{
+  "name": "02_sow_pdf_auto_ingestor",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{"field": "hours", "hoursInterval": 1}]
+        }
+      },
+      "id": "schedule",
+      "name": "Schedule: Every Hour",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "operation": "list",
+        "folderId": "={{ $env.GOOGLE_DRIVE_SOW_FOLDER_ID }}",
+        "filters": {
+          "mimeType": "application/pdf"
+        },
+        "options": {
+          "fields": ["id", "name", "modifiedTime", "webViewLink"]
+        }
+      },
+      "id": "gdrive_list",
+      "name": "Google Drive: List PDFs",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [460, 300],
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "gdrive_oauth",
+          "name": "Google Drive OAuth2"
+        }
+      },
+      "notes": "List all PDF files in the SOW folder"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.name.toLowerCase() }}",
+              "operation": "contains",
+              "value2": "sow"
+            }
+          ]
+        }
+      },
+      "id": "filter_sow",
+      "name": "Filter: Only SOW Files",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "operation": "download",
+        "fileId": "={{ $json.id }}",
+        "binaryPropertyName": "pdfData"
+      },
+      "id": "gdrive_download",
+      "name": "Google Drive: Download PDF",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [900, 200],
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "gdrive_oauth",
+          "name": "Google Drive OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {"name": "x-api-key", "value": "={{ $env.ANTHROPIC_API_KEY }}"},
+            {"name": "anthropic-version", "value": "2023-06-01"},
+            {"name": "Content-Type", "value": "application/json"}
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "model",
+              "value": "claude-sonnet-4-20250514"
+            },
+            {
+              "name": "max_tokens",
+              "value": "2000"
+            },
+            {
+              "name": "messages",
+              "value": "={{ JSON.stringify([{role: 'user', content: [{type: 'document', source: {type: 'base64', media_type: 'application/pdf', data: $binary.pdfData.data}}, {type: 'text', text: 'Extract the following from this Statement of Work (SOW) PDF and return ONLY valid JSON (no markdown, no explanation):\\n\\n{\\n  \"project_name\": \"extracted project name\",\\n  \"client_name\": \"client organization name\",\\n  \"start_date\": \"YYYY-MM-DD\",\\n  \"end_date\": \"YYYY-MM-DD\",\\n  \"scope_anchors\": [\"deliverable 1\", \"deliverable 2\", \"deliverable 3\"],\\n  \"contract_value\": 0,\\n  \"inferred_owner\": \"OneOrigin team member name if mentioned\"\\n}\\n\\nScope anchors should be the main deliverables, objectives, or milestones. Extract up to 10 key items. Return only the JSON object.'}]}]) }}"
+            }
+          ]
+        }
+      },
+      "id": "claude_extract",
+      "name": "Claude: Extract SOW Terms",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1120, 200]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse Claude response and prepare for Supabase\nconst response = $input.item.json;\nconst fileInfo = $('Filter: Only SOW Files').item.json;\n\ntry {\n  // Extract JSON from Claude's response\n  let content = response.content[0].text;\n  \n  // Clean up potential markdown formatting\n  content = content.replace(/```json\\n?/g, '').replace(/```\\n?/g, '').trim();\n  \n  const sowData = JSON.parse(content);\n  \n  return {\n    json: {\n      project_name: sowData.project_name,\n      client_name: sowData.client_name || null,\n      start_date: sowData.start_date,\n      end_date: sowData.end_date,\n      scope_anchors: sowData.scope_anchors || [],\n      renewal_window_start: sowData.end_date ? new Date(new Date(sowData.end_date).getTime() - 90*24*60*60*1000).toISOString().split('T')[0] : null,\n      contract_value: sowData.contract_value || null,\n      pdf_link: fileInfo.webViewLink,\n      google_drive_file_id: fileInfo.id,\n      inferred_owner: sowData.inferred_owner || null,\n      status: 'Active'\n    }\n  };\n} catch (error) {\n  return {\n    json: {\n      error: `Failed to parse SOW: ${error.message}`,\n      file_name: fileInfo.name,\n      file_id: fileInfo.id\n    }\n  };\n}"
+      },
+      "id": "parse_response",
+      "name": "Parse Claude Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1340, 200]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.error }}",
+              "operation": "isEmpty"
+            }
+          ]
+        }
+      },
+      "id": "check_parse",
+      "name": "IF: Parse Successful",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1560, 200]
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "table": "sow_contracts",
+        "columns": "project_name, client_name, start_date, end_date, scope_anchors, renewal_window_start, contract_value, pdf_link, google_drive_file_id, inferred_owner, status",
+        "conflictColumns": "project_name"
+      },
+      "id": "supabase_upsert",
+      "name": "Supabase: Upsert SOW",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1780, 100],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase_api",
+          "name": "Supabase API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "system_audit_logs",
+        "columns": "workflow_name, execution_status, records_processed, metadata",
+        "additionalFields": {
+          "workflow_name": "sow_pdf_auto_ingestor",
+          "execution_status": "Success",
+          "records_processed": "1",
+          "metadata": "={{ JSON.stringify({ project_name: $json.project_name, file_id: $json.google_drive_file_id }) }}"
+        }
+      },
+      "id": "audit_success",
+      "name": "Audit: Log Success",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [2000, 100],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase_api",
+          "name": "Supabase API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "system_audit_logs",
+        "columns": "workflow_name, execution_status, error_message, metadata",
+        "additionalFields": {
+          "workflow_name": "sow_pdf_auto_ingestor",
+          "execution_status": "Failed",
+          "error_message": "={{ $json.error }}",
+          "metadata": "={{ JSON.stringify({ file_name: $json.file_name, file_id: $json.file_id }) }}"
+        }
+      },
+      "id": "audit_failure",
+      "name": "Audit: Log Failure",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1780, 300],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase_api",
+          "name": "Supabase API"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Schedule: Every Hour": {
+      "main": [
+        [{"node": "Google Drive: List PDFs", "type": "main", "index": 0}]
+      ]
+    },
+    "Google Drive: List PDFs": {
+      "main": [
+        [{"node": "Filter: Only SOW Files", "type": "main", "index": 0}]
+      ]
+    },
+    "Filter: Only SOW Files": {
+      "main": [
+        [{"node": "Google Drive: Download PDF", "type": "main", "index": 0}],
+        []
+      ]
+    },
+    "Google Drive: Download PDF": {
+      "main": [
+        [{"node": "Claude: Extract SOW Terms", "type": "main", "index": 0}]
+      ]
+    },
+    "Claude: Extract SOW Terms": {
+      "main": [
+        [{"node": "Parse Claude Response", "type": "main", "index": 0}]
+      ]
+    },
+    "Parse Claude Response": {
+      "main": [
+        [{"node": "IF: Parse Successful", "type": "main", "index": 0}]
+      ]
+    },
+    "IF: Parse Successful": {
+      "main": [
+        [{"node": "Supabase: Upsert SOW", "type": "main", "index": 0}],
+        [{"node": "Audit: Log Failure", "type": "main", "index": 0}]
+      ]
+    },
+    "Supabase: Upsert SOW": {
+      "main": [
+        [{"node": "Audit: Log Success", "type": "main", "index": 0}]
+      ]
+    }
+  },
+  "settings": {
+    "errorWorkflow": "05_onevalue_alert_manager",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": [
+    {"name": "onevalue"},
+    {"name": "sow"},
+    {"name": "pdf-parser"}
+  ]
+}

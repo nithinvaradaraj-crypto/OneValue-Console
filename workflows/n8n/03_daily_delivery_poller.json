@@ -1,0 +1,267 @@
+{
+  "name": "03_daily_delivery_poller",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {"field": "cronExpression", "expression": "0 9 * * *"}
+          ]
+        }
+      },
+      "id": "schedule",
+      "name": "Schedule: Daily 9 AM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "operation": "select",
+        "table": "chat_spaces",
+        "filters": {
+          "is_active": true
+        }
+      },
+      "id": "get_spaces",
+      "name": "Supabase: Get Active Spaces",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [460, 300],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase_api",
+          "name": "Supabase API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "split_batches",
+      "name": "Split: Process Each Space",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "getAll",
+        "spaceId": "={{ $json.space_id }}",
+        "filters": {
+          "filter": "={{ 'createTime > \"' + new Date(Date.now() - 24*60*60*1000).toISOString() + '\"' }}"
+        },
+        "returnAll": true
+      },
+      "id": "chat_messages",
+      "name": "Google Chat: Get Messages",
+      "type": "n8n-nodes-base.googleChat",
+      "typeVersion": 1,
+      "position": [900, 300],
+      "credentials": {
+        "googleChatOAuth2Api": {
+          "id": "gchat_oauth",
+          "name": "Google Chat OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Filter for MOMs and transform for Supabase\nconst messages = $input.all();\nconst spaceInfo = $('Split: Process Each Space').item.json;\nconst transformed = [];\n\nconst momPatterns = [\n  /mom:/i,\n  /minutes of meeting/i,\n  /meeting notes/i,\n  /action items:/i,\n  /attendees:/i,\n  /agenda:/i,\n  /decisions:/i,\n  /blockers:/i\n];\n\nfor (const msg of messages) {\n  const data = msg.json;\n  const text = data.text || '';\n  \n  // Check if message matches MOM patterns\n  const isMOM = momPatterns.some(pattern => pattern.test(text));\n  \n  if (isMOM || text.length > 500) { // Also capture long messages\n    transformed.push({\n      json: {\n        project_id: spaceInfo.project_id,\n        source: 'GoogleChat',\n        event_type: isMOM ? 'MOM' : 'Communication',\n        title: isMOM ? 'Meeting Notes' : 'Chat Update',\n        content_raw: {\n          text: text,\n          sender: data.sender?.displayName || 'Unknown',\n          sender_email: data.sender?.email,\n          space_name: spaceInfo.space_name,\n          space_id: data.space?.name,\n          create_time: data.createTime,\n          thread_id: data.thread?.name,\n          is_mom: isMOM\n        },\n        evidence_link: `https://chat.google.com/room/${spaceInfo.space_id?.split('/').pop()}`,\n        message_id: data.name,\n        space_id: data.space?.name || spaceInfo.space_id,\n        ai_processed: false\n      }\n    });\n  }\n}\n\n// Update last_polled_at for the space\nif (messages.length > 0) {\n  transformed.push({\n    json: {\n      _update_space: true,\n      space_id: spaceInfo.space_id,\n      last_message_id: messages[messages.length - 1].json.name\n    }\n  });\n}\n\nreturn transformed.length > 0 ? transformed : [{json: {_no_new_messages: true}}];"
+      },
+      "id": "filter_transform",
+      "name": "Filter & Transform MOMs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json._no_new_messages }}",
+              "operation": "notEqual",
+              "value2": true
+            },
+            {
+              "value1": "={{ $json._update_space }}",
+              "operation": "notEqual",
+              "value2": true
+            }
+          ]
+        },
+        "combineOperation": "all"
+      },
+      "id": "filter_valid",
+      "name": "Filter: Valid Messages",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1340, 200]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "delivery_intelligence",
+        "columns": "project_id, source, event_type, title, content_raw, evidence_link, message_id, space_id, ai_processed"
+      },
+      "id": "supabase_insert",
+      "name": "Supabase: Insert Messages",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1560, 100],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase_api",
+          "name": "Supabase API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json._update_space }}",
+              "operation": "equal",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "filter_update",
+      "name": "Filter: Space Updates",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1340, 400]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "table": "chat_spaces",
+        "filters": {
+          "space_id": "={{ $json.space_id }}"
+        },
+        "updateColumns": "last_polled_at, last_message_id",
+        "additionalFields": {
+          "last_polled_at": "={{ new Date().toISOString() }}",
+          "last_message_id": "={{ $json.last_message_id }}"
+        }
+      },
+      "id": "update_space",
+      "name": "Supabase: Update Space",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1560, 400],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase_api",
+          "name": "Supabase API"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "merge",
+      "name": "Merge Results",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2,
+      "position": [1780, 250]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "system_audit_logs",
+        "columns": "workflow_name, execution_status, records_processed, metadata",
+        "additionalFields": {
+          "workflow_name": "daily_delivery_poller",
+          "execution_status": "Success",
+          "records_processed": "={{ $input.all().length }}",
+          "metadata": "={{ JSON.stringify({ timestamp: new Date().toISOString(), spaces_checked: $('Supabase: Get Active Spaces').all().length }) }}"
+        }
+      },
+      "id": "audit_log",
+      "name": "Audit: Log Execution",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [2000, 250],
+      "credentials": {
+        "supabaseApi": {
+          "id": "supabase_api",
+          "name": "Supabase API"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Schedule: Daily 9 AM": {
+      "main": [
+        [{"node": "Supabase: Get Active Spaces", "type": "main", "index": 0}]
+      ]
+    },
+    "Supabase: Get Active Spaces": {
+      "main": [
+        [{"node": "Split: Process Each Space", "type": "main", "index": 0}]
+      ]
+    },
+    "Split: Process Each Space": {
+      "main": [
+        [{"node": "Google Chat: Get Messages", "type": "main", "index": 0}]
+      ]
+    },
+    "Google Chat: Get Messages": {
+      "main": [
+        [{"node": "Filter & Transform MOMs", "type": "main", "index": 0}]
+      ]
+    },
+    "Filter & Transform MOMs": {
+      "main": [
+        [
+          {"node": "Filter: Valid Messages", "type": "main", "index": 0},
+          {"node": "Filter: Space Updates", "type": "main", "index": 0}
+        ]
+      ]
+    },
+    "Filter: Valid Messages": {
+      "main": [
+        [{"node": "Supabase: Insert Messages", "type": "main", "index": 0}],
+        []
+      ]
+    },
+    "Supabase: Insert Messages": {
+      "main": [
+        [{"node": "Merge Results", "type": "main", "index": 0}]
+      ]
+    },
+    "Filter: Space Updates": {
+      "main": [
+        [{"node": "Supabase: Update Space", "type": "main", "index": 0}],
+        []
+      ]
+    },
+    "Supabase: Update Space": {
+      "main": [
+        [{"node": "Merge Results", "type": "main", "index": 1}]
+      ]
+    },
+    "Merge Results": {
+      "main": [
+        [{"node": "Audit: Log Execution", "type": "main", "index": 0}]
+      ]
+    }
+  },
+  "settings": {
+    "errorWorkflow": "05_onevalue_alert_manager",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": [
+    {"name": "onevalue"},
+    {"name": "daily"},
+    {"name": "poller"}
+  ]
+}

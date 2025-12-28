@@ -10,12 +10,8 @@ import {
   ChevronRight,
   Calendar,
   Activity,
-  DollarSign,
-  BarChart3,
   MessageSquare,
-  FileText,
-  Zap,
-  Users
+  FileText
 } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
@@ -87,9 +83,7 @@ export function Dashboard() {
     ? Math.round(projects.reduce((sum, p) => sum + (p.health_score || 50), 0) / projects.length)
     : 0
   const upcomingRenewals = projects?.filter(p => p.days_remaining > 0 && p.days_remaining <= 90).length || 0
-  const avgSentiment = projects?.length
-    ? (projects.reduce((sum, p) => sum + (p.sentiment_trend || 0), 0) / projects.length).toFixed(2)
-    : '0.00'
+  const avgSentiment = '0.00' // Sentiment trend not available in portfolio_overview view
 
   // Check if any critical project has recent activity (within 30 mins)
   const hasRecentCriticalActivity = useMemo(() => {
@@ -415,13 +409,12 @@ function ProjectSection({
         </span>
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-        {projects.map((project, index) => (
+        {projects.map((project) => (
           <ProjectCard
             key={project.id}
             project={project}
             onClick={() => onProjectClick(project.id)}
             variant={variant}
-            index={index}
           />
         ))}
       </div>
@@ -433,16 +426,13 @@ function ProjectCard({
   project,
   onClick,
   variant,
-  index = 0,
 }: {
   project: PortfolioOverview
   onClick: () => void
   variant?: 'critical' | 'warning' | 'success'
-  index?: number
 }) {
   const healthScore = project.health_score || 50
   const contractValue = project.contract_value || 0
-  const sentiment = project.sentiment_trend || 0
 
   return (
     <GlassCard
@@ -467,19 +457,10 @@ function ProjectCard({
       </div>
 
       {/* Mini Stats Row */}
-      <div className="grid grid-cols-3 gap-2 mb-3">
+      <div className="grid grid-cols-2 gap-2 mb-3">
         <div className="text-center p-1.5 rounded-lg bg-secondary/30">
           <div className="text-sm font-bold text-foreground tabular-nums">{healthScore}%</div>
           <div className="text-[9px] text-muted-foreground uppercase">Health</div>
-        </div>
-        <div className="text-center p-1.5 rounded-lg bg-secondary/30">
-          <div className={cn(
-            'text-sm font-bold tabular-nums',
-            sentiment >= 0 ? 'text-[rgb(var(--color-green))]' : 'text-[rgb(var(--color-red))]'
-          )}>
-            {sentiment >= 0 ? '+' : ''}{sentiment.toFixed(1)}
-          </div>
-          <div className="text-[9px] text-muted-foreground uppercase">Sentiment</div>
         </div>
         <div className="text-center p-1.5 rounded-lg bg-secondary/30">
           <div className="text-sm font-bold text-foreground tabular-nums">

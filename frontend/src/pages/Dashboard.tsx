@@ -90,6 +90,24 @@ export function Dashboard() {
     enabled: activeDrillDown === 'blockers',
   })
 
+  // Fetch overdue actions for drill-down
+  const { data: overdueActions } = useQuery({
+    queryKey: ['overdue-actions'],
+    queryFn: async () => {
+      const today = new Date().toISOString().split('T')[0]
+      const { data, error } = await supabase
+        .from('action_queue_full')
+        .select('*')
+        .lt('due_date', today)
+        .in('status', ['Open', 'In Progress'])
+        .order('due_date', { ascending: true })
+
+      if (error) throw error
+      return data || []
+    },
+    enabled: activeDrillDown === 'overdue',
+  })
+
   // Fetch today's communications for drill-down (always fetch for count)
   const { data: todayComms } = useQuery({
     queryKey: ['today-comms'],
@@ -238,7 +256,7 @@ export function Dashboard() {
         <MiniMetric icon={<Clock size={16} />} label="At Risk" value={atRisk.length} color="risk" onClick={() => setActiveDrillDown('atRisk')} />
         <MiniMetric icon={<CheckCircle size={16} />} label="Healthy" value={healthy.length} color="healthy" onClick={() => setActiveDrillDown('healthy')} />
         <MiniMetric icon={<Activity size={16} />} label="Blockers" value={totalBlockers} color="critical" onClick={() => setActiveDrillDown('blockers')} />
-        <MiniMetric icon={<Clock size={16} />} label="Overdue" value={totalOverdue} color="risk" onClick={() => navigate('/actions')} />
+        <MiniMetric icon={<Clock size={16} />} label="Overdue" value={totalOverdue} color="risk" onClick={() => setActiveDrillDown('overdue')} />
         <MiniMetric icon={<Calendar size={16} />} label="Renewals (90d)" value={upcomingRenewals} color="blue" onClick={() => navigate('/renewals')} />
         <MiniMetric icon={<FileText size={16} />} label="Pending Analysis" value={unknown.length} color="muted" onClick={() => setActiveDrillDown('pendingAnalysis')} />
         <MiniMetric icon={<MessageSquare size={16} />} label="Comms Today" value={todayComms?.length || 0} color="healthy" onClick={() => setActiveDrillDown('commsToday')} />
@@ -436,6 +454,35 @@ export function Dashboard() {
               priority={action.priority}
               dueDate={action.due_date ? new Date(action.due_date).toLocaleDateString() : undefined}
               isBlocker={action.priority === 'Critical' || action.status === 'Blocked'}
+              onClick={() => {
+                setActiveDrillDown(null)
+                navigate('/actions')
+              }}
+            />
+          ))
+        )}
+      </DrillDownPanel>
+
+      {/* Overdue Panel */}
+      <DrillDownPanel
+        isOpen={activeDrillDown === 'overdue'}
+        onClose={() => setActiveDrillDown(null)}
+        type="overdue"
+        title="Overdue Actions"
+        subtitle={`${overdueActions?.length || 0} action${(overdueActions?.length || 0) !== 1 ? 's' : ''} past due date`}
+      >
+        {!overdueActions || overdueActions.length === 0 ? (
+          <DrillDownEmpty message="No overdue actions" />
+        ) : (
+          overdueActions.map((action: any) => (
+            <ActionItem
+              key={action.id}
+              title={action.title}
+              projectName={action.project_name || 'Unknown Project'}
+              status={action.status}
+              priority={action.priority}
+              dueDate={action.due_date ? new Date(action.due_date).toLocaleDateString() : undefined}
+              isBlocker={false}
               onClick={() => {
                 setActiveDrillDown(null)
                 navigate('/actions')

@@ -10,6 +10,7 @@ export type DrillDownType =
   | 'atRisk'
   | 'healthy'
   | 'blockers'
+  | 'overdue'
   | 'pendingAnalysis'
   | 'commsToday'
   | null
@@ -59,6 +60,7 @@ export function DrillDownPanel({ isOpen, onClose, type, title, subtitle, childre
     atRisk: <Clock className="w-5 h-5 text-[rgb(var(--color-orange))]" />,
     healthy: <CheckCircle className="w-5 h-5 text-[rgb(var(--color-green))]" />,
     blockers: <Activity className="w-5 h-5 text-[rgb(var(--color-red))]" />,
+    overdue: <Clock className="w-5 h-5 text-[rgb(var(--color-orange))]" />,
     pendingAnalysis: <FileText className="w-5 h-5 text-muted-foreground" />,
     commsToday: <MessageSquare className="w-5 h-5 text-[rgb(var(--color-blue))]" />,
   }
@@ -68,6 +70,7 @@ export function DrillDownPanel({ isOpen, onClose, type, title, subtitle, childre
     atRisk: 'border-l-[rgb(var(--color-orange))]',
     healthy: 'border-l-[rgb(var(--color-green))]',
     blockers: 'border-l-[rgb(var(--color-red))]',
+    overdue: 'border-l-[rgb(var(--color-orange))]',
     pendingAnalysis: 'border-l-muted-foreground',
     commsToday: 'border-l-[rgb(var(--color-blue))]',
   }

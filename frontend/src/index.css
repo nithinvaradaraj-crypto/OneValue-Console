@@ -1205,6 +1205,21 @@ body.dark::after {
   animation: scaleIn 0.4s var(--spring-bounce);
 }
 
+@keyframes slideInRight {
+  from {
+    opacity: 0;
+    transform: translateX(100%);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.animate-slide-in-right {
+  animation: slideInRight 0.3s var(--spring-bounce);
+}
+
 .animate-counter-pop {
   animation: counter-pop 0.5s var(--spring-bounce);
 }

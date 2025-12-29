@@ -19,6 +19,14 @@ import { GlassCard } from '@/components/ui/GlassCard'
 import { HealthBadge } from '@/components/ui/HealthBadge'
 import { IntrusiveAlert } from '@/components/ui/IntrusiveAlert'
 import { LoadingState } from '@/components/ui/LoadingSpinner'
+import {
+  DrillDownPanel,
+  DrillDownType,
+  ProjectItem,
+  ActionItem,
+  CommItem,
+  DrillDownEmpty
+} from '@/components/ui/DrillDownPanel'
 import type { PortfolioOverview } from '@/types/database'
 
 // Storage key for tracking alert dismissal
@@ -28,6 +36,7 @@ const ALERT_SHOW_WINDOW_MINUTES = 30 // Only show alert for activity within this
 export function Dashboard() {
   const navigate = useNavigate()
   const [alertDismissed, setAlertDismissed] = useState(false)
+  const [activeDrillDown, setActiveDrillDown] = useState<DrillDownType>(null)
 
   // Check if alert was previously dismissed
   useEffect(() => {
@@ -61,6 +70,42 @@ export function Dashboard() {
 
       if (error) throw error
       return data as { project_id: string; space_name: string }[]
+    },
+  })
+
+  // Fetch blocker actions for drill-down (Critical priority + Blocked status = blockers)
+  const { data: blockerActions } = useQuery({
+    queryKey: ['blocker-actions'],
+    queryFn: async () => {
+      // Get actions that are either Critical priority OR have Blocked status
+      const { data, error } = await supabase
+        .from('action_queue_full')
+        .select('*')
+        .or('priority.eq.Critical,status.eq.Blocked')
+        .order('priority', { ascending: true })
+
+      if (error) throw error
+      return data || []
+    },
+    enabled: activeDrillDown === 'blockers',
+  })
+
+  // Fetch today's communications for drill-down (always fetch for count)
+  const { data: todayComms } = useQuery({
+    queryKey: ['today-comms'],
+    queryFn: async () => {
+      const today = new Date()
+      today.setHours(0, 0, 0, 0)
+
+      const { data, error } = await supabase
+        .from('delivery_intelligence')
+        .select('id, source, title, body, created_at, sentiment_score, project_id')
+        .gte('created_at', today.toISOString())
+        .order('created_at', { ascending: false })
+        .limit(50)
+
+      if (error) throw error
+      return data || []
     },
   })
 
@@ -189,14 +234,14 @@ export function Dashboard() {
 
       {/* Compact Metrics Grid - 2 rows of 4 */}
       <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3 mb-6">
-        <MiniMetric icon={<AlertTriangle size={16} />} label="Critical" value={critical.length} color="critical" />
-        <MiniMetric icon={<Clock size={16} />} label="At Risk" value={atRisk.length} color="risk" />
-        <MiniMetric icon={<CheckCircle size={16} />} label="Healthy" value={healthy.length} color="healthy" />
-        <MiniMetric icon={<Activity size={16} />} label="Blockers" value={totalBlockers} color="blue" />
+        <MiniMetric icon={<AlertTriangle size={16} />} label="Critical" value={critical.length} color="critical" onClick={() => setActiveDrillDown('critical')} />
+        <MiniMetric icon={<Clock size={16} />} label="At Risk" value={atRisk.length} color="risk" onClick={() => setActiveDrillDown('atRisk')} />
+        <MiniMetric icon={<CheckCircle size={16} />} label="Healthy" value={healthy.length} color="healthy" onClick={() => setActiveDrillDown('healthy')} />
+        <MiniMetric icon={<Activity size={16} />} label="Blockers" value={totalBlockers} color="critical" onClick={() => setActiveDrillDown('blockers')} />
         <MiniMetric icon={<Clock size={16} />} label="Overdue" value={totalOverdue} color="risk" onClick={() => navigate('/actions')} />
         <MiniMetric icon={<Calendar size={16} />} label="Renewals (90d)" value={upcomingRenewals} color="blue" onClick={() => navigate('/renewals')} />
-        <MiniMetric icon={<FileText size={16} />} label="Pending Analysis" value={unknown.length} color="muted" />
-        <MiniMetric icon={<MessageSquare size={16} />} label="Comms Today" value={Math.floor(Math.random() * 20) + 5} color="healthy" />
+        <MiniMetric icon={<FileText size={16} />} label="Pending Analysis" value={unknown.length} color="muted" onClick={() => setActiveDrillDown('pendingAnalysis')} />
+        <MiniMetric icon={<MessageSquare size={16} />} label="Comms Today" value={todayComms?.length || 0} color="healthy" onClick={() => setActiveDrillDown('commsToday')} />
       </div>
 
       {/* Overdue Actions Banner - More compact */}
@@ -282,6 +327,184 @@ export function Dashboard() {
           </p>
         </GlassCard>
       )}
+
+      {/* Drill-Down Panels */}
+      {/* Critical Projects Panel */}
+      <DrillDownPanel
+        isOpen={activeDrillDown === 'critical'}
+        onClose={() => setActiveDrillDown(null)}
+        type="critical"
+        title="Critical Projects"
+        subtitle={`${critical.length} project${critical.length !== 1 ? 's' : ''} requiring immediate attention`}
+      >
+        {critical.length === 0 ? (
+          <DrillDownEmpty message="No critical projects" />
+        ) : (
+          critical.map((project) => (
+            <ProjectItem
+              key={project.id}
+              name={project.project_name}
+              client={project.client_name}
+              health={project.overall_health}
+              blockers={project.blocker_count}
+              overdue={project.overdue_action_count}
+              value={project.contract_value}
+              onClick={() => {
+                setActiveDrillDown(null)
+                navigate(`/project/${project.id}`)
+              }}
+            />
+          ))
+        )}
+      </DrillDownPanel>
+
+      {/* At Risk Projects Panel */}
+      <DrillDownPanel
+        isOpen={activeDrillDown === 'atRisk'}
+        onClose={() => setActiveDrillDown(null)}
+        type="atRisk"
+        title="At Risk Projects"
+        subtitle={`${atRisk.length} project${atRisk.length !== 1 ? 's' : ''} need monitoring`}
+      >
+        {atRisk.length === 0 ? (
+          <DrillDownEmpty message="No at-risk projects" />
+        ) : (
+          atRisk.map((project) => (
+            <ProjectItem
+              key={project.id}
+              name={project.project_name}
+              client={project.client_name}
+              health={project.overall_health}
+              blockers={project.blocker_count}
+              overdue={project.overdue_action_count}
+              value={project.contract_value}
+              onClick={() => {
+                setActiveDrillDown(null)
+                navigate(`/project/${project.id}`)
+              }}
+            />
+          ))
+        )}
+      </DrillDownPanel>
+
+      {/* Healthy Projects Panel */}
+      <DrillDownPanel
+        isOpen={activeDrillDown === 'healthy'}
+        onClose={() => setActiveDrillDown(null)}
+        type="healthy"
+        title="Healthy Projects"
+        subtitle={`${healthy.length} project${healthy.length !== 1 ? 's' : ''} on track`}
+      >
+        {healthy.length === 0 ? (
+          <DrillDownEmpty message="No healthy projects" />
+        ) : (
+          healthy.map((project) => (
+            <ProjectItem
+              key={project.id}
+              name={project.project_name}
+              client={project.client_name}
+              health={project.overall_health}
+              blockers={project.blocker_count}
+              overdue={project.overdue_action_count}
+              value={project.contract_value}
+              onClick={() => {
+                setActiveDrillDown(null)
+                navigate(`/project/${project.id}`)
+              }}
+            />
+          ))
+        )}
+      </DrillDownPanel>
+
+      {/* Blockers Panel */}
+      <DrillDownPanel
+        isOpen={activeDrillDown === 'blockers'}
+        onClose={() => setActiveDrillDown(null)}
+        type="blockers"
+        title="Critical & Blocked Items"
+        subtitle={`${blockerActions?.length || 0} high-priority item${(blockerActions?.length || 0) !== 1 ? 's' : ''} requiring attention`}
+      >
+        {!blockerActions || blockerActions.length === 0 ? (
+          <DrillDownEmpty message="No critical or blocked items" />
+        ) : (
+          blockerActions.map((action: any) => (
+            <ActionItem
+              key={action.id}
+              title={action.title}
+              projectName={action.project_name || 'Unknown Project'}
+              status={action.status}
+              priority={action.priority}
+              dueDate={action.due_date ? new Date(action.due_date).toLocaleDateString() : undefined}
+              isBlocker={action.priority === 'Critical' || action.status === 'Blocked'}
+              onClick={() => {
+                setActiveDrillDown(null)
+                navigate('/actions')
+              }}
+            />
+          ))
+        )}
+      </DrillDownPanel>
+
+      {/* Pending Analysis Panel */}
+      <DrillDownPanel
+        isOpen={activeDrillDown === 'pendingAnalysis'}
+        onClose={() => setActiveDrillDown(null)}
+        type="pendingAnalysis"
+        title="Pending Analysis"
+        subtitle={`${unknown.length} project${unknown.length !== 1 ? 's' : ''} awaiting AI analysis`}
+      >
+        {unknown.length === 0 ? (
+          <DrillDownEmpty message="No projects pending analysis" />
+        ) : (
+          unknown.map((project) => (
+            <ProjectItem
+              key={project.id}
+              name={project.project_name}
+              client={project.client_name}
+              health={project.overall_health || 'Unknown'}
+              value={project.contract_value}
+              onClick={() => {
+                setActiveDrillDown(null)
+                navigate(`/project/${project.id}`)
+              }}
+            />
+          ))
+        )}
+      </DrillDownPanel>
+
+      {/* Communications Today Panel */}
+      <DrillDownPanel
+        isOpen={activeDrillDown === 'commsToday'}
+        onClose={() => setActiveDrillDown(null)}
+        type="commsToday"
+        title="Today's Communications"
+        subtitle={`${todayComms?.length || 0} message${(todayComms?.length || 0) !== 1 ? 's' : ''} received today`}
+      >
+        {!todayComms || todayComms.length === 0 ? (
+          <DrillDownEmpty message="No communications today" />
+        ) : (
+          todayComms.map((comm: any) => {
+            const project = projects?.find(p => p.id === comm.project_id)
+            return (
+              <CommItem
+                key={comm.id}
+                source={comm.source}
+                title={comm.title || 'Untitled'}
+                snippet={comm.body?.substring(0, 150) || ''}
+                timestamp={new Date(comm.created_at).toLocaleTimeString()}
+                sentiment={comm.sentiment_score}
+                projectName={project?.project_name}
+                onClick={() => {
+                  if (comm.project_id) {
+                    setActiveDrillDown(null)
+                    navigate(`/project/${comm.project_id}`)
+                  }
+                }}
+              />
+            )
+          })
+        )}
+      </DrillDownPanel>
     </div>
   )
 }

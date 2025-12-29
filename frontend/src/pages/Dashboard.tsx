@@ -90,17 +90,16 @@ export function Dashboard() {
     enabled: activeDrillDown === 'blockers',
   })
 
-  // Fetch overdue actions for drill-down
+  // Fetch open actions for drill-down (overdue count comes from AI analysis)
   const { data: overdueActions } = useQuery({
     queryKey: ['overdue-actions'],
     queryFn: async () => {
-      const today = new Date().toISOString().split('T')[0]
+      // Get all open/in-progress actions (due_date is not populated in this dataset)
       const { data, error } = await supabase
         .from('action_queue_full')
         .select('*')
-        .lt('due_date', today)
         .in('status', ['Open', 'In Progress'])
-        .order('due_date', { ascending: true })
+        .order('priority', { ascending: true })
 
       if (error) throw error
       return data || []
@@ -468,11 +467,11 @@ export function Dashboard() {
         isOpen={activeDrillDown === 'overdue'}
         onClose={() => setActiveDrillDown(null)}
         type="overdue"
-        title="Overdue Actions"
-        subtitle={`${overdueActions?.length || 0} action${(overdueActions?.length || 0) !== 1 ? 's' : ''} past due date`}
+        title="Open Action Items"
+        subtitle={`${overdueActions?.length || 0} action${(overdueActions?.length || 0) !== 1 ? 's' : ''} requiring attention`}
       >
         {!overdueActions || overdueActions.length === 0 ? (
-          <DrillDownEmpty message="No overdue actions" />
+          <DrillDownEmpty message="No open actions" />
         ) : (
           overdueActions.map((action: any) => (
             <ActionItem
@@ -482,7 +481,7 @@ export function Dashboard() {
               status={action.status}
               priority={action.priority}
               dueDate={action.due_date ? new Date(action.due_date).toLocaleDateString() : undefined}
-              isBlocker={false}
+              isBlocker={action.priority === 'Critical'}
               onClick={() => {
                 setActiveDrillDown(null)
                 navigate('/actions')
